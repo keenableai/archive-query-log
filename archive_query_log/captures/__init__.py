@@ -49,9 +49,9 @@ def _iter_captures(
         else None,
     )
     for cdx_capture in cdx_captures:
-        if len(cdx_capture.url) > 2083 or (
+        if len(cdx_capture.url) > 1900 or (
             cdx_capture.redirect_url is not None
-            and len(cdx_capture.redirect_url) > 2083
+            and len(cdx_capture.redirect_url) > 1900
         ):
             warn(
                 RuntimeWarning(
