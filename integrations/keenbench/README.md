@@ -74,3 +74,14 @@ shorter than `--min-words` (default 3) are dropped; output is grouped into
 wordpiece count, with per-word `hard_words` provenance on each row. The
 bert-base-uncased `vocab.txt` is downloaded and cached on first run (or
 pass `--vocab`).
+
+Non-English queries are filtered by default (disable with
+`--any-language`). Plain fastText lid.176 under-recalls English on short
+keyword queries, so the filter combines three signals: a confident
+non-English fastText verdict on either the full query or the query with
+rare words removed rejects; a moderately confident English verdict on the
+rare-words-removed context accepts; otherwise the query is kept iff most
+of its alphabetic context words are common English words per wordfreq
+(language-neutral SKU/error-code queries have no such words and are
+kept). The lid.176 model is downloaded and cached on first run (or pass
+`--lid-model`).

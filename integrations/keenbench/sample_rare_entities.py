@@ -2,6 +2,8 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "tokenizers>=0.15",
+#     "fasttext-predict>=0.9",
+#     "wordfreq>=3.1",
 # ]
 # ///
 import argparse
@@ -11,11 +13,18 @@ import sys
 import urllib.request
 from pathlib import Path
 
+import fasttext
 from tokenizers import BertWordPieceTokenizer
+from wordfreq import zipf_frequency
 
 SUBWORD_THRESHOLD = 5
 UNK = "[UNK]"
 VOCAB_URL = "https://huggingface.co/bert-base-uncased/resolve/main/vocab.txt"
+LID_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz"
+FOREIGN_CONFIDENT = 0.7
+ENGLISH_CONFIDENT = 0.5
+ENGLISH_ZIPF = 3.0
+ENGLISH_WORD_FRACTION = 0.6
 
 NON_LATIN_RE = re.compile("[^\u0020-\u024f\u1e00-\u1eff\u2000-\u206f\u20a0-\u20cf]")
 SEARCH_OPERATOR_RE = re.compile(
@@ -93,6 +102,39 @@ def hard_words_for(query: str, tokenize) -> list[dict]:
     return out
 
 
+def load_lid(model_path: str | None):
+    if model_path is None:
+        cached = Path.home() / ".cache" / "lid.176.ftz"
+        if not cached.exists():
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            urllib.request.urlretrieve(LID_URL, cached)
+        model_path = str(cached)
+    model = fasttext.load_model(model_path)
+
+    def lid(text: str) -> tuple[str, float]:
+        labels, probs = model.predict(text.lower().replace("\n", " "), k=1)
+        return labels[0].removeprefix("__label__"), probs[0]
+
+    return lid
+
+
+def is_english(query: str, context_words: list[str], lid) -> bool:
+    lang_full, p_full = lid(query)
+    context = " ".join(context_words)
+    lang_ctx, p_ctx = lid(context) if context else (lang_full, p_full)
+    if lang_full != "en" and p_full >= FOREIGN_CONFIDENT:
+        return False
+    if lang_ctx != "en" and p_ctx >= FOREIGN_CONFIDENT:
+        return False
+    if lang_ctx == "en" and p_ctx >= ENGLISH_CONFIDENT:
+        return True
+    letter_words = [w for w in context_words if w.isalpha()]
+    if not letter_words:
+        return True
+    common = sum(zipf_frequency(w, "en") >= ENGLISH_ZIPF for w in letter_words)
+    return common / len(letter_words) >= ENGLISH_WORD_FRACTION
+
+
 def length_bucket(n_words: int) -> str:
     if n_words <= 2:
         return "short"
@@ -135,12 +177,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("serps", nargs="+", help="serps JSONL exported by `aql serps export`")
     parser.add_argument("--vocab", default=None, help="bert-base-uncased vocab.txt (downloaded and cached if omitted)")
+    parser.add_argument("--lid-model", default=None, help="fasttext lid.176 model (downloaded and cached if omitted)")
+    parser.add_argument("--any-language", action="store_true")
     parser.add_argument("--min-words", type=int, default=3)
     parser.add_argument("--max-query-len", type=int, default=200)
     parser.add_argument("--per-bucket", type=int, default=0, help="cap output per length bucket (0 = no cap)")
     args = parser.parse_args()
 
     tokenize = load_tokenizer(args.vocab)
+    lid = None if args.any_language else load_lid(args.lid_model)
     queries = iter_queries(args.serps)
     print(f"unique queries: {len(queries)}", file=sys.stderr)
 
@@ -165,6 +210,12 @@ def main() -> None:
         if not hard:
             stats["no_rare_word"] = stats.get("no_rare_word", 0) + 1
             continue
+        if lid is not None:
+            hard_set = {h["word"] for h in hard}
+            context_words = [w for w in words if w not in hard_set]
+            if not is_english(query, context_words, lid):
+                stats["non_english"] = stats.get("non_english", 0) + 1
+                continue
         bucket = length_bucket(len(words))
         buckets[bucket].append(
             {
