@@ -1,9 +1,15 @@
 # Keenbench query stream
 
 Runs the AQL crawling pipeline on a single machine against the live Wayback
-Machine CDX API to produce a continuous stream of real user queries, then
-samples queries containing rare named entities from it. No access to the
-gated AQL-22 corpus is needed; the queries are re-mined from public CDX data.
+Machine CDX API to produce a continuous stream of real user queries. No
+access to the gated AQL-22 corpus is needed; the queries are re-mined from
+public CDX data.
+
+The output artifact is `aql/queries.jsonl` in the Hugging Face dataset
+`keenable-ai/keenbench-results`: one line per unique query with metadata
+(`query`, `providers`, `first_seen`, `last_seen`, `n_serps`, `sample_url`).
+Downstream filtering (rare-entity selection, language filtering) lives in
+the keenbench repo and consumes that artifact.
 
 ## Setup
 
@@ -47,41 +53,17 @@ to whole-domain scans dominated by homepage captures.
 `captures fetch` streams captures indefinitely for large engines; stop it
 whenever enough captures have accumulated and rerun it later to continue.
 
-## Query stream
+## Query stream artifact
 
 ```
 integrations/keenbench/parse_and_export.sh 10
+integrations/keenbench/publish_query_stream.sh
 ```
 
-Parses queries from capture URLs and exports a random sample to
-`exported_serps.jsonl` (one SERP per line, query in `url_query`).
-
-## Rare-entity sampling
-
-```
-uv run integrations/keenbench/sample_rare_entities.py exported_serps.jsonl \
-  > rare_entity_queries.jsonl
-```
-
-Uses the same rarity definition as the keenable-eval rare-entity producer
-(`dagster_keenable/shared/rare_entity.py`): a query qualifies iff at least
-one word tokenizes to `[UNK]` under `bert-base-uncased` WordPiece or splits
-into ≥ 5 wordpieces, after the same eligibility pre-filters (non-Latin
-scripts, search operators, quoted phrases, VINs, hex hashes, crypto wallet
-addresses). On top of that, URL-shaped queries are rejected and queries
-shorter than `--min-words` (default 3) are dropped; output is grouped into
-`medium` (3–5 words) and `long` (6+) buckets, ranked by the flagged word's
-wordpiece count, with per-word `hard_words` provenance on each row. The
-bert-base-uncased `vocab.txt` is downloaded and cached on first run (or
-pass `--vocab`).
-
-Non-English queries are filtered by default (disable with
-`--any-language`). Plain fastText lid.176 under-recalls English on short
-keyword queries, so the filter combines three signals: a confident
-non-English fastText verdict on either the full query or the query with
-rare words removed rejects; a moderately confident English verdict on the
-rare-words-removed context accepts; otherwise the query is kept iff most
-of its alphabetic context words are common English words per wordfreq
-(language-neutral SKU/error-code queries have no such words and are
-kept). The lid.176 model is downloaded and cached on first run (or pass
-`--lid-model`).
+`parse_and_export.sh` parses queries from capture URLs into the serps
+index. `publish_query_stream.sh` aggregates the serps index into
+`aql_queries.jsonl` (one line per unique query, case-insensitive dedup,
+provider/timestamp/serp-count metadata) and uploads it to
+`aql/queries.jsonl` in the `keenable-ai/keenbench-results` dataset
+(override with `HF_DATASET`). Rerunning after more crawling refreshes the
+artifact in place.
