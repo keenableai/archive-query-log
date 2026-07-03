@@ -826,6 +826,11 @@ URL_QUERY_PARSERS: Sequence[UrlQueryParser] = (
     ),
     QueryParameterUrlQueryParser(
         provider_id=UUID("3725fae7-edf7-4243-bcce-e5ccb615ae76"),
+        url_pattern=re_compile(r"^https?://[^/]+/html/?\?"),
+        parameter="q",
+    ),
+    QueryParameterUrlQueryParser(
+        provider_id=UUID("3725fae7-edf7-4243-bcce-e5ccb615ae76"),
         url_pattern=re_compile(r"^https?://[^/]+/d\.js\?"),
         parameter="q",
     ),
