@@ -156,7 +156,7 @@ class HttpConfig(BaseSettings):
             respect_retry_after_header=True,
         )
         _limiter = Limiter(
-            RequestRate(1, Duration.SECOND * 10),
+            RequestRate(1, Duration.SECOND * 2),
         )
         _adapter = LimiterAdapter(
             max_retries=_retries,
@@ -176,7 +176,7 @@ class HttpConfig(BaseSettings):
             }
         )
         _limiter = Limiter(
-            RequestRate(1, Duration.SECOND * 10),
+            RequestRate(1, Duration.SECOND * 2),
         )
         _adapter = LimiterAdapter(
             limiter=_limiter,
