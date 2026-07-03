@@ -72,6 +72,7 @@ def _iter_captures(
             ":".join(capture_id_components),
         )
         yield Capture(
+            index=config.es.index_captures,
             id=capture_id,
             last_modified=utc_now(),
             archive=source.archive,
