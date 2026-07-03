@@ -1,40 +1,115 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "spacy>=3.7",
-#     "click>=8.0",
-#     "wordfreq>=3.1",
-#     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+#     "tokenizers>=0.15",
 # ]
 # ///
 import argparse
 import json
 import re
 import sys
-from collections import Counter
+import urllib.request
+from pathlib import Path
 
-import spacy
-from wordfreq import zipf_frequency
+from tokenizers import BertWordPieceTokenizer
 
-ENTITY_LABELS = {"PERSON", "ORG", "GPE", "LOC", "FAC", "PRODUCT", "WORK_OF_ART", "EVENT"}
-URLISH = re.compile(r"https?://|www\.|\.(com|org|net|de|fr|ru|jp)(\b|/)", re.I)
-OPERATORISH = re.compile(r"(^|\s)[#@-]\w|\w:(\"|\w)|[+&|]\w|\"")
-HAS_ALPHA = re.compile(r"[A-Za-z]")
-TOKEN = re.compile(r"[A-Za-z][A-Za-z'\-]+")
+SUBWORD_THRESHOLD = 5
+UNK = "[UNK]"
+VOCAB_URL = "https://huggingface.co/bert-base-uncased/resolve/main/vocab.txt"
+
+NON_LATIN_RE = re.compile("[^\u0020-\u024f\u1e00-\u1eff\u2000-\u206f\u20a0-\u20cf]")
+SEARCH_OPERATOR_RE = re.compile(
+    r"\b(?:site|inurl|intitle|intext|filetype|cache|link|allinurl|allintitle|allintext):\S+",
+    re.IGNORECASE,
+)
+QUOTE_CHARS = "\"'`‘’“”«»"
+HAS_QUOTE_RE = re.compile(f"[{re.escape(QUOTE_CHARS)}]")
+PUNCT_RE = re.compile(r"[^\w\s]")
+VIN_CANDIDATE_RE = re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b", re.IGNORECASE)
+HEX_HASH_RE = re.compile(r"\b[0-9a-fA-F]{24,}\b")
+HEX_ETH_ADDRESS_RE = re.compile(r"\b0[xX][0-9a-fA-F]{40}\b")
+CRYPTO_BASE58_RE = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b")
+URLISH_RE = re.compile(r"https?://|www\.|\.(com|org|net|io|de|fr|ru|jp)(\b|/)", re.I)
 
 
-def latin_ratio(text: str) -> float:
-    letters = [c for c in text if c.isalpha()]
-    if not letters:
-        return 0.0
-    return sum(c.isascii() for c in letters) / len(letters)
+def _contains_vin(query: str) -> bool:
+    for match in VIN_CANDIDATE_RE.finditer(query):
+        token = match.group(0)
+        if any(c.isalpha() for c in token) and any(c.isdigit() for c in token):
+            return True
+    return False
 
 
-def entity_rarity(entity: str) -> float | None:
-    tokens = TOKEN.findall(entity)
-    if not tokens:
-        return None
-    return min(zipf_frequency(t.lower(), "en") for t in tokens)
+def _contains_hex_hash(query: str) -> bool:
+    for match in HEX_HASH_RE.finditer(query):
+        if any(c in "abcdefABCDEF" for c in match.group(0)):
+            return True
+    if HEX_ETH_ADDRESS_RE.search(query):
+        return True
+    return False
+
+
+def _contains_crypto_address(query: str) -> bool:
+    for match in CRYPTO_BASE58_RE.finditer(query):
+        token = match.group(0)
+        if (
+            any(c.isdigit() for c in token)
+            and any(c.isupper() for c in token)
+            and any(c.islower() for c in token)
+        ):
+            return True
+    return False
+
+
+def is_eligible(query: str) -> bool:
+    if NON_LATIN_RE.search(query):
+        return False
+    if SEARCH_OPERATOR_RE.search(query):
+        return False
+    if HAS_QUOTE_RE.search(query):
+        return False
+    if _contains_vin(query):
+        return False
+    if _contains_hex_hash(query):
+        return False
+    if _contains_crypto_address(query):
+        return False
+    return True
+
+
+def words_for(query: str) -> list[str]:
+    cleaned = PUNCT_RE.sub(" ", query.lower())
+    return [w for w in cleaned.split() if w]
+
+
+def hard_words_for(query: str, tokenize) -> list[dict]:
+    out = []
+    for w in words_for(query):
+        pieces = tokenize(w)
+        if not pieces:
+            continue
+        if UNK in pieces or len(pieces) >= SUBWORD_THRESHOLD:
+            out.append({"word": w, "subwords": list(pieces)})
+    return out
+
+
+def length_bucket(n_words: int) -> str:
+    if n_words <= 2:
+        return "short"
+    if n_words <= 5:
+        return "medium"
+    return "long"
+
+
+def load_tokenizer(vocab_path: str | None):
+    if vocab_path is None:
+        cached = Path.home() / ".cache" / "bert_base_uncased_vocab.txt"
+        if not cached.exists():
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            urllib.request.urlretrieve(VOCAB_URL, cached)
+        vocab_path = str(cached)
+    tokenizer = BertWordPieceTokenizer(vocab_path, lowercase=True)
+    return lambda text: list(tokenizer.encode(text, add_special_tokens=False).tokens)
 
 
 def iter_queries(paths: list[str]) -> dict[str, dict]:
@@ -59,65 +134,58 @@ def iter_queries(paths: list[str]) -> dict[str, dict]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("serps", nargs="+", help="serps JSONL exported by `aql serps export`")
-    parser.add_argument("--max-zipf", type=float, default=3.0, help="rarest token of the entity must be below this zipf frequency")
-    parser.add_argument("--min-query-len", type=int, default=6)
-    parser.add_argument("--max-query-len", type=int, default=120)
-    parser.add_argument("--top", type=int, default=100)
+    parser.add_argument("--vocab", default=None, help="bert-base-uncased vocab.txt (downloaded and cached if omitted)")
+    parser.add_argument("--min-words", type=int, default=3)
+    parser.add_argument("--max-query-len", type=int, default=200)
+    parser.add_argument("--per-bucket", type=int, default=0, help="cap output per length bucket (0 = no cap)")
     args = parser.parse_args()
 
+    tokenize = load_tokenizer(args.vocab)
     queries = iter_queries(args.serps)
     print(f"unique queries: {len(queries)}", file=sys.stderr)
 
-    nlp = spacy.load("en_core_web_sm", disable=["lemmatizer"])
-
-    candidates = []
-    stats = Counter()
-    texts = []
+    stats: dict[str, int] = {}
+    buckets: dict[str, list[dict]] = {"medium": [], "long": [], "short": []}
     for q in queries.values():
         query = q["query"]
-        if not (args.min_query_len <= len(query) <= args.max_query_len):
-            stats["len"] += 1
+        if len(query) > args.max_query_len:
+            stats["too_long"] = stats.get("too_long", 0) + 1
             continue
-        if URLISH.search(query) or not HAS_ALPHA.search(query):
-            stats["urlish_or_no_alpha"] += 1
+        if URLISH_RE.search(query):
+            stats["urlish"] = stats.get("urlish", 0) + 1
             continue
-        if OPERATORISH.search(query):
-            stats["operator_syntax"] += 1
+        words = words_for(query)
+        if len(words) < args.min_words:
+            stats["too_few_words"] = stats.get("too_few_words", 0) + 1
             continue
-        if latin_ratio(query) < 0.9:
-            stats["non_latin"] += 1
+        if not is_eligible(query):
+            stats["ineligible"] = stats.get("ineligible", 0) + 1
             continue
-        texts.append(q)
+        hard = hard_words_for(query, tokenize)
+        if not hard:
+            stats["no_rare_word"] = stats.get("no_rare_word", 0) + 1
+            continue
+        bucket = length_bucket(len(words))
+        buckets[bucket].append(
+            {
+                **q,
+                "length_bucket": bucket,
+                "n_words": len(words),
+                "hard_words": hard,
+                "max_pieces": max(
+                    len(h["subwords"]) if UNK not in h["subwords"] else 99 for h in hard
+                ),
+            }
+        )
 
-    raw_docs = nlp.pipe([t["query"] for t in texts], batch_size=256)
-    titled_docs = nlp.pipe([t["query"].title() for t in texts], batch_size=256)
-    for q, doc, titled in zip(texts, raw_docs, titled_docs):
-        ents = [e for e in doc.ents if e.label_ in ENTITY_LABELS]
-        if not ents:
-            ents = [e for e in titled.ents if e.label_ in ENTITY_LABELS]
-        if not ents:
-            stats["no_entity"] += 1
-            continue
-        scored = [(e.text, e.label_, entity_rarity(e.text)) for e in ents]
-        scored = [
-            (t, l, r)
-            for t, l, r in scored
-            if r is not None and not re.search(r"\d|\w\.\w|[/_=]", t)
-        ]
-        if not scored:
-            stats["no_scorable_entity"] += 1
-            continue
-        text, label, rarity = min(scored, key=lambda x: x[2])
-        if rarity >= args.max_zipf:
-            stats["common_entity"] += 1
-            continue
-        candidates.append({**q, "entity": text, "entity_label": label, "rarity_zipf": rarity})
-
-    print(f"filtered: {dict(stats)}", file=sys.stderr)
-    print(f"rare-entity candidates: {len(candidates)}", file=sys.stderr)
-    candidates.sort(key=lambda c: c["rarity_zipf"])
-    for c in candidates[: args.top]:
-        print(json.dumps(c, ensure_ascii=False))
+    print(f"filtered: {stats}", file=sys.stderr)
+    for bucket in ("medium", "long", "short"):
+        rows = sorted(buckets[bucket], key=lambda c: -c["max_pieces"])
+        if args.per_bucket:
+            rows = rows[: args.per_bucket]
+        print(f"{bucket}: {len(buckets[bucket])} candidates, emitting {len(rows)}", file=sys.stderr)
+        for c in rows:
+            print(json.dumps(c, ensure_ascii=False))
 
 
 if __name__ == "__main__":

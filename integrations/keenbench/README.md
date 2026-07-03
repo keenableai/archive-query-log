@@ -60,12 +60,17 @@ Parses queries from capture URLs and exports a random sample to
 
 ```
 uv run integrations/keenbench/sample_rare_entities.py exported_serps.jsonl \
-  --max-zipf 3.0 --top 1000 > rare_entity_queries.jsonl
+  > rare_entity_queries.jsonl
 ```
 
-Dedups queries, drops URL-like/operator-syntax/non-Latin/filename queries,
-extracts entities with spaCy (with a title-cased retry for lowercase
-queries), and keeps queries whose rarest entity token has a wordfreq zipf
-frequency below the threshold, ranked rarest first. Residual noise (typos,
-non-English Latin-script queries) is expected to be filtered downstream by
-an LLM judge or a knowledge-base existence check.
+Uses the same rarity definition as the keenable-eval rare-entity producer
+(`dagster_keenable/shared/rare_entity.py`): a query qualifies iff at least
+one word tokenizes to `[UNK]` under `bert-base-uncased` WordPiece or splits
+into ≥ 5 wordpieces, after the same eligibility pre-filters (non-Latin
+scripts, search operators, quoted phrases, VINs, hex hashes, crypto wallet
+addresses). On top of that, URL-shaped queries are rejected and queries
+shorter than `--min-words` (default 3) are dropped; output is grouped into
+`medium` (3–5 words) and `long` (6+) buckets, ranked by the flagged word's
+wordpiece count, with per-word `hard_words` provenance on each row. The
+bert-base-uncased `vocab.txt` is downloaded and cached on first run (or
+pass `--vocab`).
