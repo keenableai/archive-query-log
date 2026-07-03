@@ -36,6 +36,7 @@ def _sources_batch(archive: Archive, provider: Provider, config: Config) -> list
                 ":".join(source_id_components),
             )
             source = Source(
+                index=config.es.index_sources,
                 id=source_id,
                 last_modified=utc_now(),
                 archive=InnerArchive(

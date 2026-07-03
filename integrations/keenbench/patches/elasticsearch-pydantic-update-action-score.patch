@@ -1,0 +1,10 @@
+--- a/elasticsearch_pydantic/_base.py
++++ b/elasticsearch_pydantic/_base.py
+@@ -585,6 +585,7 @@
+             exclude_unset=True,
+             by_alias=True,
+         )
++        action.pop("_score", None)
+         action["_op_type"] = "update"
+         if retry_on_conflict is not None:
+             action["retry_on_conflict"] = retry_on_conflict

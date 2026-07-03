@@ -1,0 +1,20 @@
+--- a/web_archive_api/cdx.py
++++ b/web_archive_api/cdx.py
+@@ -459,8 +459,15 @@
+             ],
+         )
+         if num_pages_response.status_code == 200:
+-            num_pages_text = num_pages_response.text
+-            if num_pages_text.strip() != "":
++            num_pages_text = num_pages_response.text.strip()
++            if num_pages_text.startswith("["):
++                from json import loads as _json_loads
++                try:
++                    _rows = _json_loads(num_pages_text)
++                    num_pages_text = str(_rows[1][0])
++                except (ValueError, IndexError, KeyError, TypeError):
++                    num_pages_text = ""
++            elif num_pages_text != "":
+                 num_pages_text = num_pages_text.splitlines()[0]
+             if num_pages_text.isnumeric():
+                 num_pages = int(num_pages_text)

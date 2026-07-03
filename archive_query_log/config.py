@@ -22,6 +22,7 @@ from archive_query_log.utils.warc import WarcStore, WarcS3StoreWrapper
 class EsConfig(BaseSettings):
     model_config = SettingsConfigDict(frozen=True)
 
+    scheme: str = "https"
     host: str = "localhost"
     port: int = 9200
     username: str | None = None
@@ -43,7 +44,7 @@ class EsConfig(BaseSettings):
     @cached_property
     def client(self) -> Elasticsearch:
         return Elasticsearch(
-            hosts=f"https://{self.host}:{self.port}",
+            hosts=f"{self.scheme}://{self.host}:{self.port}",
             api_key=self.api_key,
             http_auth=(self.username, self.password)
             if self.api_key is None
@@ -59,7 +60,7 @@ class EsConfig(BaseSettings):
     @cached_property
     def async_client(self) -> AsyncElasticsearch:
         return AsyncElasticsearch(
-            hosts=f"https://{self.host}:{self.port}",
+            hosts=f"{self.scheme}://{self.host}:{self.port}",
             api_key=self.api_key,
             http_auth=(self.username, self.password)
             if self.api_key is None
@@ -90,7 +91,7 @@ class EsConfig(BaseSettings):
                 initial_backoff=self.bulk_initial_backoff,
                 max_backoff=self.bulk_max_backoff,
                 max_retries=self.max_retries,
-                raise_on_error=True,
+                raise_on_error=False,
                 raise_on_exception=True,
                 yield_ok=True,
             )
