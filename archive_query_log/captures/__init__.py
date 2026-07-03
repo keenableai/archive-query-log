@@ -49,11 +49,14 @@ def _iter_captures(
         else None,
     )
     for cdx_capture in cdx_captures:
-        if len(cdx_capture.url) > 32766:
+        if len(cdx_capture.url) > 2083 or (
+            cdx_capture.redirect_url is not None
+            and len(cdx_capture.redirect_url) > 2083
+        ):
             warn(
                 RuntimeWarning(
-                    f"The URL {cdx_capture.url} exceeds the "
-                    f"maximum length of Elasticsearch."
+                    f"The URL {cdx_capture.url[:100]}... exceeds the "
+                    f"maximum length of pydantic's HttpUrl."
                     f" It will be skipped."
                 )
             )
